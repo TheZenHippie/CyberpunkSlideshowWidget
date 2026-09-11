@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -15,7 +14,6 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Application = System.Windows.Application;
 using MessageBox = System.Windows.MessageBox;
-using OpenFolderDialog = Microsoft.Win32.OpenFolderDialog;
 using Path = System.IO.Path;
 using Rectangle = System.Windows.Shapes.Rectangle;
 
@@ -23,6 +21,27 @@ namespace CyberpunkSlideshowWidget
 {
     public partial class MainWindow : Window
     {
+        private static readonly HashSet<string> SupportedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".ico"
+        };
+
+        private static readonly Random _random = new Random();
+
+        // Cached pre-frozen transforms for EXIF orientation tags (indices 0..8)
+        private static readonly Transform?[] ExifTransforms = CreateExifTransforms();
+
+        // Cached pre-frozen solid color brushes for CRT glitches to eliminate frame allocation churn
+        private static readonly Brush[] GlitchBrushes = CreateGlitchBrushes();
+
+        // Shared static retro CRT static noise frames (256x256 frozen bitmaps, created lazily once)
+        private static readonly List<WriteableBitmap> SharedSnowBitmaps = new List<WriteableBitmap>();
+        private static readonly object SnowLock = new object();
+
+        // Pre-frozen rainbow rotation animation
+        private static readonly DoubleAnimation RainbowAnimation = CreateRainbowAnimation();
+
+        // Instance state
         private List<string> _imageFiles = new List<string>();
         private List<int> _displayOrder = new List<int>();
         private int _displayIndex = -1;
@@ -31,12 +50,12 @@ namespace CyberpunkSlideshowWidget
         private bool _recurseSubdirectories = false;
         private bool _isRandomized = false;
         private string? _currentFolderPath = null;
-        private static readonly Random _random = new Random();
+        private bool _isInitialized = false;
+        private bool _isClosed = false;
 
         // Effects state
         private bool _rainbowBorderEnabled = false;
         private double _borderWidth = 4.0;
-        private DoubleAnimation? _rainbowAnimation;
 
         private bool _crtScanlinesEnabled = false;
         private double _scanlineThickness = 3.0;
@@ -49,9 +68,7 @@ namespace CyberpunkSlideshowWidget
         private bool _crtSnowEnabled = false;
         private double _snowAmount = 25.0;
         private readonly DispatcherTimer _snowTimer;
-        private readonly List<WriteableBitmap> _snowBitmaps = new List<WriteableBitmap>();
         private int _snowFrameIndex = 0;
-        private bool _isInitialized = false;
 
         private readonly DispatcherTimer _effectsCloseTimer;
         private FrameworkElement? _subscribedPopupChild = null;
@@ -84,23 +101,7 @@ namespace CyberpunkSlideshowWidget
             {
                 Interval = TimeSpan.FromMilliseconds(700)
             };
-            _effectsCloseTimer.Tick += (s, e) =>
-            {
-                _effectsCloseTimer.Stop();
-                if (EffectsMenuItem != null && EffectsMenuItem.IsSubmenuOpen)
-                {
-                    var popupChild = GetEffectsPopupChild();
-                    bool inPopup = popupChild != null && (popupChild.IsMouseOver || popupChild.IsMouseCaptureWithin);
-                    if (!EffectsMenuItem.IsMouseOver && !inPopup)
-                    {
-                        EffectsMenuItem.IsSubmenuOpen = false;
-                        SetSiblingHitTestVisible(true);
-                    }
-                }
-            };
-
-            // Generate noise frames for retro CRT static snow
-            GenerateSnowBitmaps();
+            _effectsCloseTimer.Tick += EffectsCloseTimer_Tick;
 
             InitializeComponent();
 
@@ -113,11 +114,137 @@ namespace CyberpunkSlideshowWidget
             Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         }
 
+        private static DoubleAnimation CreateRainbowAnimation()
+        {
+            var anim = new DoubleAnimation
+            {
+                From = 0,
+                To = 360,
+                Duration = new Duration(TimeSpan.FromSeconds(5)),
+                RepeatBehavior = RepeatBehavior.Forever
+            };
+            anim.Freeze();
+            return anim;
+        }
+
+        private static Brush[] CreateGlitchBrushes()
+        {
+            Color[] colors =
+            {
+                Color.FromArgb(220, 0, 240, 255),   // Neon cyan
+                Color.FromArgb(220, 255, 0, 127),   // Neon magenta
+                Color.FromArgb(240, 255, 255, 255), // CRT phosphor white
+                Color.FromArgb(235, 0, 0, 0),       // Deep horizontal scan dropout
+                Color.FromArgb(210, 0, 255, 102),   // Neon phosphor lime
+                Color.FromArgb(200, 255, 230, 0)    // Cyber yellow
+            };
+
+            var brushes = new Brush[colors.Length];
+            for (int i = 0; i < colors.Length; i++)
+            {
+                var brush = new SolidColorBrush(colors[i]);
+                brush.Freeze();
+                brushes[i] = brush;
+            }
+            return brushes;
+        }
+
+        private static Transform?[] CreateExifTransforms()
+        {
+            var transforms = new Transform?[9];
+
+            // 1: Normal (null)
+            transforms[1] = null;
+
+            // 2: Flip Horizontal
+            var t2 = new ScaleTransform(-1, 1);
+            t2.Freeze();
+            transforms[2] = t2;
+
+            // 3: Rotate 180
+            var t3 = new RotateTransform(180);
+            t3.Freeze();
+            transforms[3] = t3;
+
+            // 4: Flip Vertical
+            var t4 = new ScaleTransform(1, -1);
+            t4.Freeze();
+            transforms[4] = t4;
+
+            // 5: Transpose (Rotate 270 CW + Flip Horizontal)
+            var g5 = new TransformGroup();
+            g5.Children.Add(new RotateTransform(270));
+            g5.Children.Add(new ScaleTransform(-1, 1));
+            g5.Freeze();
+            transforms[5] = g5;
+
+            // 6: Rotate 90 CW (Standard smartphone portrait photo)
+            var t6 = new RotateTransform(90);
+            t6.Freeze();
+            transforms[6] = t6;
+
+            // 7: Transverse (Rotate 90 CW + Flip Horizontal)
+            var g7 = new TransformGroup();
+            g7.Children.Add(new RotateTransform(90));
+            g7.Children.Add(new ScaleTransform(-1, 1));
+            g7.Freeze();
+            transforms[7] = g7;
+
+            // 8: Rotate 270 CW (or 90 CCW)
+            var t8 = new RotateTransform(270);
+            t8.Freeze();
+            transforms[8] = t8;
+
+            return transforms;
+        }
+
+        private static List<WriteableBitmap> GetOrCreateSnowBitmaps()
+        {
+            if (SharedSnowBitmaps.Count == 8)
+            {
+                return SharedSnowBitmaps;
+            }
+
+            lock (SnowLock)
+            {
+                if (SharedSnowBitmaps.Count == 8)
+                {
+                    return SharedSnowBitmaps;
+                }
+
+                int w = 256, h = 256;
+                for (int f = 0; f < 8; f++)
+                {
+                    var wb = new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgr32, null);
+                    int stride = w * 4;
+                    byte[] pixels = new byte[stride * h];
+                    for (int i = 0; i < pixels.Length; i += 4)
+                    {
+                        byte val = (byte)_random.Next(256);
+                        bool colorSpeck = _random.Next(30) == 0;
+                        pixels[i] = colorSpeck ? (byte)_random.Next(256) : val;     // B
+                        pixels[i + 1] = colorSpeck ? (byte)_random.Next(256) : val; // G
+                        pixels[i + 2] = colorSpeck ? (byte)_random.Next(256) : val; // R
+                        pixels[i + 3] = 255;
+                    }
+                    wb.WritePixels(new Int32Rect(0, 0, w, h), pixels, stride, 0);
+                    wb.Freeze();
+                    SharedSnowBitmaps.Add(wb);
+                }
+                return SharedSnowBitmaps;
+            }
+        }
+
         private void OnDisplaySettingsChanged(object? sender, EventArgs e)
         {
+            if (_isClosed) return;
+
             Dispatcher.InvokeAsync(() =>
             {
-                this.InvalidateVisual();
+                if (!_isClosed)
+                {
+                    this.InvalidateVisual();
+                }
             });
         }
 
@@ -203,7 +330,6 @@ namespace CyberpunkSlideshowWidget
                     ? _imageFiles[_displayOrder[_displayIndex]]
                     : null;
 
-                string[] extensions = { ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".ico" };
                 var options = new EnumerationOptions
                 {
                     RecurseSubdirectories = _recurseSubdirectories,
@@ -212,7 +338,7 @@ namespace CyberpunkSlideshowWidget
                 };
 
                 var foundFiles = Directory.EnumerateFiles(folderPath, "*.*", options)
-                    .Where(file => extensions.Contains(Path.GetExtension(file).ToLowerInvariant()))
+                    .Where(file => SupportedExtensions.Contains(Path.GetExtension(file)))
                     .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
@@ -364,7 +490,7 @@ namespace CyberpunkSlideshowWidget
 
         private void NextImage()
         {
-            if (_imageFiles.Count == 0 || _displayOrder.Count == 0) return;
+            if (_isClosed || _imageFiles.Count == 0 || _displayOrder.Count == 0) return;
 
             int attempts = 0;
             while (attempts < _displayOrder.Count)
@@ -404,7 +530,7 @@ namespace CyberpunkSlideshowWidget
 
         private void PrevImage()
         {
-            if (_imageFiles.Count == 0 || _displayOrder.Count == 0) return;
+            if (_isClosed || _imageFiles.Count == 0 || _displayOrder.Count == 0) return;
 
             int attempts = 0;
             while (attempts < _displayOrder.Count)
@@ -442,28 +568,58 @@ namespace CyberpunkSlideshowWidget
             {
                 if (!File.Exists(filePath)) return false;
 
-                // Load image into a MemoryStream to release file lock immediately
-                byte[] imageBytes = File.ReadAllBytes(filePath);
-                using var ms = new MemoryStream(imageBytes);
+                // Open with non-locking file sharing so files on disk are never locked
+                using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
 
-                // Detect EXIF orientation (crucial for phone photos like Samsung Galaxy S23, iPhone, Pixel)
-                int orientation = GetExifOrientationFromBytes(imageBytes);
-                if (orientation <= 1)
+                // Fast JPEG EXIF byte scan on first 64KB without loading entire file into LOH memory
+                int orientation = 1;
+                string ext = Path.GetExtension(filePath);
+                if (ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase) || ext.Equals(".jpeg", StringComparison.OrdinalIgnoreCase))
                 {
-                    orientation = GetOrientationFromMetadata(ms);
-                    ms.Position = 0;
+                    byte[] headerBytes = new byte[Math.Min(65536, (int)fs.Length)];
+                    int bytesRead = fs.Read(headerBytes, 0, headerBytes.Length);
+                    orientation = GetExifOrientationFromBytes(headerBytes, bytesRead);
+                    fs.Position = 0;
                 }
 
+                // Header inspection with DelayCreation to inspect dimensions and metadata without rasterizing pixels
+                var decoder = BitmapDecoder.Create(fs, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
+                if (decoder.Frames.Count == 0) return false;
+
+                var frame = decoder.Frames[0];
+                if (orientation <= 1 && frame.Metadata is BitmapMetadata metadata)
+                {
+                    orientation = GetOrientationFromMetadata(metadata);
+                }
+
+                int origWidth = frame.PixelWidth;
+                int origHeight = frame.PixelHeight;
+
+                // Max allowable dimension bounded by screen resolution (supports 1080p, 1440p, 4K)
+                int screenWidth = (int)SystemParameters.PrimaryScreenWidth;
+                int screenHeight = (int)SystemParameters.PrimaryScreenHeight;
+                int maxScreenDim = Math.Max(screenWidth, screenHeight);
+                if (maxScreenDim <= 0) maxScreenDim = 1920;
+                int maxAllowedDim = Math.Min(Math.Max(maxScreenDim, 1920), 3840);
+
+                // Load image into frozen BitmapImage
+                fs.Position = 0;
                 var bitmap = new BitmapImage();
                 bitmap.BeginInit();
                 bitmap.CacheOption = BitmapCacheOption.OnLoad;
-                bitmap.StreamSource = ms;
+                bitmap.StreamSource = fs;
 
-                // Downscale excessively large photos (e.g. 48MP/200MP camera images) to prevent multi-gigabyte memory leaks
-                int maxScreenDim = Math.Max((int)SystemParameters.PrimaryScreenWidth, (int)SystemParameters.PrimaryScreenHeight);
-                if (maxScreenDim > 0 && maxScreenDim < 3840)
+                // Downscale ONLY if original exceeds screen bound (never upscale small images/icons)
+                if (origWidth > maxAllowedDim || origHeight > maxAllowedDim)
                 {
-                    bitmap.DecodePixelWidth = Math.Min(maxScreenDim, 2560);
+                    if (origWidth >= origHeight)
+                    {
+                        bitmap.DecodePixelWidth = maxAllowedDim;
+                    }
+                    else
+                    {
+                        bitmap.DecodePixelHeight = maxAllowedDim;
+                    }
                 }
 
                 bitmap.EndInit();
@@ -471,7 +627,7 @@ namespace CyberpunkSlideshowWidget
 
                 // Apply EXIF orientation transform if needed so vertical phone photos display upright
                 BitmapSource finalImage = bitmap;
-                Transform? transform = GetExifTransform(orientation);
+                Transform? transform = (orientation >= 1 && orientation <= 8) ? ExifTransforms[orientation] : null;
                 if (transform != null)
                 {
                     var transformed = new TransformedBitmap();
@@ -486,8 +642,8 @@ namespace CyberpunkSlideshowWidget
                 _isAdjustingOrientation = true;
 
                 // Adjust window aspect based on image orientation (using post-transformed dimensions!)
-                double currentWidth = this.Width;
-                double currentHeight = this.Height;
+                double currentWidth = double.IsNaN(this.Width) ? this.ActualWidth : this.Width;
+                double currentHeight = double.IsNaN(this.Height) ? this.ActualHeight : this.Height;
 
                 if (finalImage.PixelWidth >= finalImage.PixelHeight)
                 {
@@ -523,48 +679,18 @@ namespace CyberpunkSlideshowWidget
             }
         }
 
-        // Map EXIF orientation tag (1-8) to WPF Transform
-        private static Transform? GetExifTransform(int orientation)
-        {
-            switch (orientation)
-            {
-                case 2: // Flip Horizontal
-                    return new ScaleTransform(-1, 1);
-                case 3: // Rotate 180
-                    return new RotateTransform(180);
-                case 4: // Flip Vertical
-                    return new ScaleTransform(1, -1);
-                case 5: // Transpose (Rotate 270 CW + Flip Horizontal)
-                    var g5 = new TransformGroup();
-                    g5.Children.Add(new RotateTransform(270));
-                    g5.Children.Add(new ScaleTransform(-1, 1));
-                    return g5;
-                case 6: // Rotate 90 CW (Standard smartphone portrait photo)
-                    return new RotateTransform(90);
-                case 7: // Transverse (Rotate 90 CW + Flip Horizontal)
-                    var g7 = new TransformGroup();
-                    g7.Children.Add(new RotateTransform(90));
-                    g7.Children.Add(new ScaleTransform(-1, 1));
-                    return g7;
-                case 8: // Rotate 270 CW (or 90 CCW)
-                    return new RotateTransform(270);
-                default:
-                    return null;
-            }
-        }
-
         // Fast zero-allocation byte scanner for EXIF Orientation tag in JPEG files
-        private static int GetExifOrientationFromBytes(byte[] bytes)
+        private static int GetExifOrientationFromBytes(byte[] bytes, int validLength)
         {
             try
             {
-                if (bytes == null || bytes.Length < 14) return 1;
+                if (bytes == null || validLength < 14) return 1;
 
                 // Check JPEG SOI (0xFF, 0xD8)
                 if (bytes[0] != 0xFF || bytes[1] != 0xD8) return 1;
 
                 int index = 2;
-                while (index + 4 < bytes.Length)
+                while (index + 4 < validLength)
                 {
                     if (bytes[index] != 0xFF) return 1;
 
@@ -573,7 +699,7 @@ namespace CyberpunkSlideshowWidget
                     if (marker == 0xDA || marker == 0xD9) break;
 
                     int length = (bytes[index + 2] << 8) | bytes[index + 3];
-                    if (length < 2 || index + 2 + length > bytes.Length) break;
+                    if (length < 2 || index + 2 + length > validLength) break;
 
                     // 0xE1 is APP1 (EXIF marker)
                     if (marker == 0xE1 && length >= 14)
@@ -610,12 +736,12 @@ namespace CyberpunkSlideshowWidget
 
                             uint ifd0Offset = ReadU32(tiffStart + 4);
                             int ifd0Pos = tiffStart + (int)ifd0Offset;
-                            if (ifd0Pos + 2 > bytes.Length) return 1;
+                            if (ifd0Pos + 2 > validLength) return 1;
 
                             ushort entriesCount = ReadU16(ifd0Pos);
                             int entryPos = ifd0Pos + 2;
 
-                            for (int i = 0; i < entriesCount && entryPos + 12 <= bytes.Length; i++, entryPos += 12)
+                            for (int i = 0; i < entriesCount && entryPos + 12 <= validLength; i++, entryPos += 12)
                             {
                                 ushort tag = ReadU16(entryPos);
                                 if (tag == 0x0112) // Orientation tag
@@ -639,39 +765,34 @@ namespace CyberpunkSlideshowWidget
         }
 
         // Secondary fallback to query WIC BitmapMetadata for EXIF orientation
-        private static int GetOrientationFromMetadata(MemoryStream stream)
+        private static int GetOrientationFromMetadata(BitmapMetadata metadata)
         {
             try
             {
-                stream.Position = 0;
-                var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.None, BitmapCacheOption.None);
-                if (decoder.Frames.Count > 0 && decoder.Frames[0].Metadata is BitmapMetadata metadata)
+                string[] queries = {
+                    "/app1/ifd/{ushort=274}",
+                    "/app1/ifd/exif/{ushort=274}",
+                    "/ifd/{ushort=274}",
+                    "System.Photo.Orientation"
+                };
+                foreach (var q in queries)
                 {
-                    string[] queries = {
-                        "/app1/ifd/{ushort=274}",
-                        "/app1/ifd/exif/{ushort=274}",
-                        "/ifd/{ushort=274}",
-                        "System.Photo.Orientation"
-                    };
-                    foreach (var q in queries)
+                    try
                     {
-                        try
+                        if (metadata.ContainsQuery(q))
                         {
-                            if (metadata.ContainsQuery(q))
+                            object? val = metadata.GetQuery(q);
+                            if (val != null)
                             {
-                                object? val = metadata.GetQuery(q);
-                                if (val != null)
+                                int orientation = Convert.ToInt32(val);
+                                if (orientation >= 1 && orientation <= 8)
                                 {
-                                    int orientation = Convert.ToInt32(val);
-                                    if (orientation >= 1 && orientation <= 8)
-                                    {
-                                        return orientation;
-                                    }
+                                    return orientation;
                                 }
                             }
                         }
-                        catch { }
                     }
+                    catch { }
                 }
             }
             catch { }
@@ -857,17 +978,7 @@ namespace CyberpunkSlideshowWidget
         private void StartRainbowAnimation()
         {
             if (RainbowRotateTransform == null) return;
-            if (_rainbowAnimation == null)
-            {
-                _rainbowAnimation = new DoubleAnimation
-                {
-                    From = 0,
-                    To = 360,
-                    Duration = new Duration(TimeSpan.FromSeconds(5)),
-                    RepeatBehavior = RepeatBehavior.Forever
-                };
-            }
-            RainbowRotateTransform.BeginAnimation(RotateTransform.AngleProperty, _rainbowAnimation);
+            RainbowRotateTransform.BeginAnimation(RotateTransform.AngleProperty, RainbowAnimation);
         }
 
         private void StopRainbowAnimation()
@@ -933,11 +1044,19 @@ namespace CyberpunkSlideshowWidget
             double lineThickness = Math.Max(1.0, Math.Round(thickness));
             double period = lineThickness * 2.0;
 
+            var darkBrush = new SolidColorBrush(Color.FromArgb(245, 0, 0, 0));
+            darkBrush.Freeze();
+
+            var transparentRect = new RectangleGeometry(new Rect(0, 0, 1, period));
+            transparentRect.Freeze();
+
+            var darkRect = new RectangleGeometry(new Rect(0, 0, 1, lineThickness));
+            darkRect.Freeze();
+
             var group = new DrawingGroup();
-            // Transparent gap
-            group.Children.Add(new GeometryDrawing(Brushes.Transparent, null, new RectangleGeometry(new Rect(0, 0, 1, period))));
-            // Dark scanline with deep contrast for high-resolution displays
-            group.Children.Add(new GeometryDrawing(new SolidColorBrush(Color.FromArgb(245, 0, 0, 0)), null, new RectangleGeometry(new Rect(0, 0, 1, lineThickness))));
+            group.Children.Add(new GeometryDrawing(Brushes.Transparent, null, transparentRect));
+            group.Children.Add(new GeometryDrawing(darkBrush, null, darkRect));
+            group.Freeze();
 
             CrtDrawingBrush.Viewport = new Rect(0, 0, 1, period);
             CrtDrawingBrush.Drawing = group;
@@ -1016,7 +1135,7 @@ namespace CyberpunkSlideshowWidget
 
         private void GlitchTimer_Tick(object? sender, EventArgs e)
         {
-            if (!_crtGlitchEnabled || _glitchChance <= 0)
+            if (_isClosed || !_crtGlitchEnabled || _glitchChance <= 0)
             {
                 ResetGlitchState();
                 return;
@@ -1060,15 +1179,6 @@ namespace CyberpunkSlideshowWidget
                 double maxBarHeight = Math.Max(28, canvasHeight * 0.12);
 
                 int barCount = _random.Next(2, 6);
-                Color[] glitchColors = new[]
-                {
-                    Color.FromArgb(220, 0, 240, 255),   // Neon cyan
-                    Color.FromArgb(220, 255, 0, 127),   // Neon magenta
-                    Color.FromArgb(240, 255, 255, 255), // CRT phosphor white
-                    Color.FromArgb(235, 0, 0, 0),       // Deep horizontal scan dropout
-                    Color.FromArgb(210, 0, 255, 102),   // Neon phosphor lime
-                    Color.FromArgb(200, 255, 230, 0)    // Cyber yellow
-                };
 
                 for (int i = 0; i < barCount; i++)
                 {
@@ -1079,7 +1189,7 @@ namespace CyberpunkSlideshowWidget
                     {
                         Width = canvasWidth + 80,
                         Height = barHeight,
-                        Fill = new SolidColorBrush(glitchColors[_random.Next(glitchColors.Length)]),
+                        Fill = GlitchBrushes[_random.Next(GlitchBrushes.Length)],
                         Opacity = 0.70 + (_random.NextDouble() * 0.30)
                     };
                     Canvas.SetLeft(rect, barX);
@@ -1113,39 +1223,18 @@ namespace CyberpunkSlideshowWidget
         // -------------------------------------------------------------
         // CRT Snow
         // -------------------------------------------------------------
-        private void GenerateSnowBitmaps()
-        {
-            // 256x256 noise frames provide high-density retro phosphor grain on high-res displays
-            int w = 256, h = 256;
-            for (int f = 0; f < 8; f++)
-            {
-                var wb = new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgr32, null);
-                int stride = w * 4;
-                byte[] pixels = new byte[stride * h];
-                for (int i = 0; i < pixels.Length; i += 4)
-                {
-                    byte val = (byte)_random.Next(256);
-                    bool colorSpeck = _random.Next(30) == 0;
-                    pixels[i] = colorSpeck ? (byte)_random.Next(256) : val;     // B
-                    pixels[i + 1] = colorSpeck ? (byte)_random.Next(256) : val; // G
-                    pixels[i + 2] = colorSpeck ? (byte)_random.Next(256) : val; // R
-                    pixels[i + 3] = 255;
-                }
-                wb.WritePixels(new Int32Rect(0, 0, w, h), pixels, stride, 0);
-                wb.Freeze();
-                _snowBitmaps.Add(wb);
-            }
-        }
-
         private void SnowTimer_Tick(object? sender, EventArgs e)
         {
-            if (!_crtSnowEnabled || _snowBitmaps.Count == 0 || CrtSnowOverlay == null)
+            if (_isClosed || !_crtSnowEnabled || CrtSnowOverlay == null)
             {
                 return;
             }
 
-            _snowFrameIndex = (_snowFrameIndex + 1) % _snowBitmaps.Count;
-            CrtSnowOverlay.Source = _snowBitmaps[_snowFrameIndex];
+            var bitmaps = GetOrCreateSnowBitmaps();
+            if (bitmaps.Count == 0) return;
+
+            _snowFrameIndex = (_snowFrameIndex + 1) % bitmaps.Count;
+            CrtSnowOverlay.Source = bitmaps[_snowFrameIndex];
         }
 
         private void CrtSnow_Click(object sender, RoutedEventArgs e)
@@ -1219,9 +1308,10 @@ namespace CyberpunkSlideshowWidget
                 if (enabled)
                 {
                     UpdateSnowOpacity();
-                    if (_snowBitmaps.Count > 0 && CrtSnowOverlay.Source == null)
+                    var bitmaps = GetOrCreateSnowBitmaps();
+                    if (bitmaps.Count > 0 && CrtSnowOverlay.Source == null)
                     {
-                        CrtSnowOverlay.Source = _snowBitmaps[0];
+                        CrtSnowOverlay.Source = bitmaps[0];
                     }
                     CrtSnowOverlay.Visibility = Visibility.Visible;
                     if (_snowTimer != null && !_snowTimer.IsEnabled)
@@ -1234,6 +1324,7 @@ namespace CyberpunkSlideshowWidget
                     _snowTimer?.Stop();
                     CrtSnowOverlay.Visibility = Visibility.Collapsed;
                     CrtSnowOverlay.Opacity = 0.0;
+                    CrtSnowOverlay.Source = null;
                 }
             }
         }
@@ -1281,9 +1372,7 @@ namespace CyberpunkSlideshowWidget
         }
 
         // Smart Context Menu Placement:
-        // If right-clicking near the right edge of the monitor, position MainContextMenu so that there is
-        // at least 260px of screen space on its right. This guarantees that the Effects submenu always opens
-        // to the RIGHT (the natural and proven stable direction) rather than flipping to the left.
+        // Guarantees menu fits on screen and Effects submenu opens predictably
         private void Window_ContextMenuOpening(object sender, ContextMenuEventArgs e)
         {
             if (MainContextMenu == null) return;
@@ -1302,16 +1391,19 @@ namespace CyberpunkSlideshowWidget
                     double cursorXDip = pt.X / dpi.DpiScaleX;
                     double cursorYDip = pt.Y / dpi.DpiScaleY;
 
-                    // Combined width needed for MainContextMenu (~240px) + Effects submenu (~240px) + safety margin = 500px
                     const double requiredSpaceRight = 500.0;
 
                     if (cursorXDip + requiredSpaceRight > screenRightDip)
                     {
-                        // Near the right monitor edge: position MainContextMenu to leave 260px on its right
+                        // Near the right monitor edge: position MainContextMenu to leave room on right
                         double targetLeft = screenRightDip - requiredSpaceRight;
                         MainContextMenu.Placement = PlacementMode.AbsolutePoint;
                         MainContextMenu.HorizontalOffset = Math.Max(screenLeftDip + 10, targetLeft);
-                        MainContextMenu.VerticalOffset = Math.Clamp(cursorYDip - 20, screenTopDip + 10, screenBottomDip - 500);
+
+                        // Safe vertical clamp that prevents ArgumentException when min > max on small/scaled displays
+                        double minTop = screenTopDip + 10;
+                        double maxTop = Math.Max(minTop, screenBottomDip - 500);
+                        MainContextMenu.VerticalOffset = Math.Clamp(cursorYDip - 20, minTop, maxTop);
                     }
                     else
                     {
@@ -1334,7 +1426,6 @@ namespace CyberpunkSlideshowWidget
             popup = EffectsMenuItem.Template?.FindName("PART_Popup", EffectsMenuItem) as Popup;
             if (popup != null) return popup;
 
-            // Fallback: visual tree search
             return FindVisualChild<Popup>(EffectsMenuItem);
         }
 
@@ -1398,10 +1489,6 @@ namespace CyberpunkSlideshowWidget
             return false;
         }
 
-        // Sibling Hit-Test Shield:
-        // When the Effects submenu is open, temporarily disables hit-testing on sibling items in MainContextMenu.
-        // This completely prevents sibling items (like OpacitySlider, More Intervals, etc.) from stealing highlight,
-        // triggering MenuBase.ChangeHighlight, or closing the Effects submenu while the user moves the mouse across the menu.
         private void SetSiblingHitTestVisible(bool visible)
         {
             if (MainContextMenu == null) return;
@@ -1410,6 +1497,21 @@ namespace CyberpunkSlideshowWidget
                 if (item != EffectsMenuItem && item is UIElement uie)
                 {
                     uie.IsHitTestVisible = visible;
+                }
+            }
+        }
+
+        private void EffectsCloseTimer_Tick(object? sender, EventArgs e)
+        {
+            _effectsCloseTimer.Stop();
+            if (EffectsMenuItem != null && EffectsMenuItem.IsSubmenuOpen)
+            {
+                var popupChild = GetEffectsPopupChild();
+                bool inPopup = popupChild != null && (popupChild.IsMouseOver || popupChild.IsMouseCaptureWithin);
+                if (!EffectsMenuItem.IsMouseOver && !inPopup)
+                {
+                    EffectsMenuItem.IsSubmenuOpen = false;
+                    SetSiblingHitTestVisible(true);
                 }
             }
         }
@@ -1447,7 +1549,6 @@ namespace CyberpunkSlideshowWidget
                 DependencyObject? source = e.OriginalSource as DependencyObject;
                 if (!IsElementInEffects(source))
                 {
-                    // Clicked on MainContextMenu background or outside Effects submenu
                     _effectsCloseTimer.Stop();
                     EffectsMenuItem.IsSubmenuOpen = false;
                     SetSiblingHitTestVisible(true);
@@ -1547,12 +1648,22 @@ namespace CyberpunkSlideshowWidget
         // Spawn another instance / window
         private void NewWindow_Click(object sender, RoutedEventArgs e)
         {
+            double newLeft = this.Left + 30;
+            double newTop = this.Top + 30;
+
+            // Ensure the newly spawned window remains completely on visible desktop bounds
+            double maxLeft = SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth - 120;
+            double maxTop = SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight - 120;
+            if (newLeft > maxLeft) newLeft = SystemParameters.VirtualScreenLeft + 40;
+            if (newTop > maxTop) newTop = SystemParameters.VirtualScreenTop + 40;
+
             var newWindow = new MainWindow
             {
-                Left = this.Left + 30,
-                Top = this.Top + 30,
+                Left = newLeft,
+                Top = newTop,
                 Topmost = this.Topmost
             };
+
             if (newWindow.AlwaysOnTopMenuItem != null)
             {
                 newWindow.AlwaysOnTopMenuItem.IsChecked = this.Topmost;
@@ -1585,7 +1696,7 @@ namespace CyberpunkSlideshowWidget
             this.Close();
         }
 
-        // Exit all widgets
+        // Exit all widgets cleanly
         private void ExitAll_Click(object sender, RoutedEventArgs e)
         {
             foreach (Window window in Application.Current.Windows.Cast<Window>().ToList())
@@ -1596,27 +1707,71 @@ namespace CyberpunkSlideshowWidget
                 }
                 catch { }
             }
-            Application.Current.Shutdown();
+            App.CleanProcessExit(0);
         }
 
         // Clean up all resources when window is closed
         protected override void OnClosed(EventArgs e)
         {
+            _isClosed = true;
+
+            // Unsubscribe static system display events
             Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+
+            // Stop and unhook all DispatcherTimers
             _timer.Stop();
             _timer.Tick -= Timer_Tick;
+
             _glitchTimer.Stop();
             _glitchTimer.Tick -= GlitchTimer_Tick;
+
             _snowTimer.Stop();
             _snowTimer.Tick -= SnowTimer_Tick;
+
             _effectsCloseTimer.Stop();
+            _effectsCloseTimer.Tick -= EffectsCloseTimer_Tick;
+
+            // Close context menu and detach handlers
+            if (MainContextMenu != null)
+            {
+                MainContextMenu.IsOpen = false;
+                MainContextMenu.PreviewMouseMove -= MainContextMenu_PreviewMouseMove;
+                MainContextMenu.PreviewMouseLeftButtonDown -= MainContextMenu_PreviewMouseLeftButtonDown;
+                MainContextMenu.Closed -= MainContextMenu_Closed;
+            }
+
             SetSiblingHitTestVisible(true);
             DetachPopupChildHandlers();
+
+            // Stop animations and clear visual effects
             StopRainbowAnimation();
+            ResetGlitchState();
+
+            if (CrtSnowOverlay != null)
+            {
+                CrtSnowOverlay.Source = null;
+            }
+
+            if (CrtDrawingBrush != null)
+            {
+                CrtDrawingBrush.Drawing = null;
+            }
+
+            if (CyberpunkRainbowBorder != null)
+            {
+                CyberpunkRainbowBorder.BorderBrush = null;
+            }
+
+            // Release image sources and collection references
             SlideshowImage.Source = null;
             _imageFiles.Clear();
             _displayOrder.Clear();
+
             base.OnClosed(e);
+
+            // Reclaim unmanaged texture memory promptly
+            GC.Collect(1, GCCollectionMode.Optimized, false);
         }
     }
 }
+

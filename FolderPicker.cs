@@ -12,7 +12,7 @@ namespace CyberpunkSlideshowWidget
         private const int RecurseCheckboxControlId = 1001;
 
         public static (bool Success, string? SelectedPath, bool RecurseSubdirectories) Show(
-            Window owner,
+            Window? owner,
             string? initialFolder,
             bool initialRecurse)
         {
@@ -31,10 +31,16 @@ namespace CyberpunkSlideshowWidget
                     // Set initial folder if provided and valid
                     if (!string.IsNullOrWhiteSpace(initialFolder) && Directory.Exists(initialFolder))
                     {
-                        if (SHCreateItemFromParsingName(initialFolder, IntPtr.Zero, typeof(IShellItem).GUID, out IShellItem initialFolderItem) == 0)
+                        if (SHCreateItemFromParsingName(initialFolder, IntPtr.Zero, typeof(IShellItem).GUID, out IShellItem initialFolderItem) == 0 && initialFolderItem != null)
                         {
-                            dialog.SetFolder(initialFolderItem);
-                            Marshal.ReleaseComObject(initialFolderItem);
+                            try
+                            {
+                                dialog.SetFolder(initialFolderItem);
+                            }
+                            finally
+                            {
+                                Marshal.FinalReleaseComObject(initialFolderItem);
+                            }
                         }
                     }
 
@@ -44,7 +50,7 @@ namespace CyberpunkSlideshowWidget
                         customize.AddCheckButton(RecurseCheckboxControlId, "Recurse subdirectories", initialRecurse);
                     }
 
-                    IntPtr hwndOwner = new WindowInteropHelper(owner).Handle;
+                    IntPtr hwndOwner = owner != null ? new WindowInteropHelper(owner).Handle : IntPtr.Zero;
                     int hr = dialog.Show(hwndOwner);
 
                     // User clicked "Select Folder" (S_OK / 0)
@@ -61,10 +67,20 @@ namespace CyberpunkSlideshowWidget
                         }
 
                         dialog.GetResult(out IShellItem shellItem);
-                        shellItem.GetDisplayName(SIGDN_FILESYSPATH, out string path);
-                        Marshal.ReleaseComObject(shellItem);
+                        if (shellItem != null)
+                        {
+                            string path;
+                            try
+                            {
+                                shellItem.GetDisplayName(SIGDN_FILESYSPATH, out path);
+                            }
+                            finally
+                            {
+                                Marshal.FinalReleaseComObject(shellItem);
+                            }
 
-                        return (true, path, recurseResult);
+                            return (true, path, recurseResult);
+                        }
                     }
 
                     // User cancelled
@@ -72,7 +88,7 @@ namespace CyberpunkSlideshowWidget
                 }
                 finally
                 {
-                    Marshal.ReleaseComObject(dialog);
+                    Marshal.FinalReleaseComObject(dialog);
                 }
             }
             catch
@@ -89,7 +105,7 @@ namespace CyberpunkSlideshowWidget
                     fallbackDialog.InitialDirectory = initialFolder;
                 }
 
-                if (fallbackDialog.ShowDialog(owner) == true && !string.IsNullOrWhiteSpace(fallbackDialog.FolderName))
+                if (owner != null && fallbackDialog.ShowDialog(owner) == true && !string.IsNullOrWhiteSpace(fallbackDialog.FolderName))
                 {
                     return (true, fallbackDialog.FolderName, initialRecurse);
                 }
