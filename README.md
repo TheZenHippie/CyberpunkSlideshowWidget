@@ -1,4 +1,6 @@
-<img width="1589" height="301" alt="image" src="https://github.com/user-attachments/assets/1470d558-51ec-45ea-964a-de4f161a4734" />
+<img width="580" height="679" alt="Screenshot 2026-09-11 020847" src="https://github.com/user-attachments/assets/320e1a1f-9423-48a6-9304-ee840a739a62" />
+<img width="430" height="250" alt="Screenshot 2026-09-11 020826" src="https://github.com/user-attachments/assets/a472a67c-3c3e-4410-b28e-e799aa5b27c6" />
+
 # 🖼️ CyberpunkSlideshowWidget
 
 [![.NET](https://img.shields.io/badge/.NET-8.0--windows-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
