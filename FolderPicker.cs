@@ -5,7 +5,7 @@ using System.Windows;
 using System.Windows.Interop;
 using OpenFolderDialog = Microsoft.Win32.OpenFolderDialog;
 
-namespace SlideshowWidget
+namespace CyberpunkSlideshowWidget
 {
     public static class FolderPicker
     {

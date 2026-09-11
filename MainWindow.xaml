@@ -1,7 +1,7 @@
-<Window x:Class="SlideshowWidget.MainWindow"
+<Window x:Class="CyberpunkSlideshowWidget.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Slideshow Widget" 
+        Title="Cyberpunk Slideshow Widget" 
         Icon="icon.png"
         Height="400" Width="400"
         MinHeight="120" MinWidth="120"
@@ -10,10 +10,14 @@
         Background="Transparent"
         ResizeMode="CanResizeWithGrip"
         MouseLeftButtonDown="Window_MouseLeftButtonDown"
-        SizeChanged="Window_SizeChanged">
+        SizeChanged="Window_SizeChanged"
+        ContextMenuOpening="Window_ContextMenuOpening">
 
     <Window.ContextMenu>
-        <ContextMenu>
+        <ContextMenu x:Name="MainContextMenu"
+                     PreviewMouseMove="MainContextMenu_PreviewMouseMove"
+                     PreviewMouseLeftButtonDown="MainContextMenu_PreviewMouseLeftButtonDown"
+                     Closed="MainContextMenu_Closed">
             <MenuItem Header="Select Folder..." Click="SelectFolder_Click"/>
             <MenuItem x:Name="RecurseSubdirectoriesMenuItem" 
                       Header="Recurse Subdirectories" 
@@ -81,6 +85,122 @@
             </MenuItem>
 
             <Separator/>
+            <MenuItem x:Name="EffectsMenuItem" 
+                      Header="Effects"
+                      StaysOpenOnClick="True"
+                      MouseEnter="EffectsMenuItem_MouseEnter"
+                      MouseLeave="EffectsMenuItem_MouseLeave"
+                      SubmenuOpened="EffectsMenuItem_SubmenuOpened"
+                      SubmenuClosed="EffectsMenuItem_SubmenuClosed">
+
+                <!-- Cyberpunk Rainbow Border -->
+                <MenuItem x:Name="RainbowBorderMenuItem" 
+                          Header="Cyberpunk Rainbow Border" 
+                          IsCheckable="True" 
+                          IsChecked="False" 
+                          StaysOpenOnClick="True"
+                          Click="RainbowBorder_Click"/>
+                <MenuItem StaysOpenOnClick="True">
+                    <MenuItem.Header>
+                        <StackPanel Width="200" Margin="0,2">
+                            <DockPanel LastChildFill="False">
+                                <TextBlock Text="Border Width" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="BorderWidthValueText" Text="4px" DockPanel.Dock="Right" Foreground="#666666"/>
+                            </DockPanel>
+                            <Slider x:Name="BorderWidthSlider" 
+                                    Minimum="1" Maximum="20" Value="4"
+                                    SmallChange="1" LargeChange="2"
+                                    TickFrequency="1" IsSnapToTickEnabled="True"
+                                    Margin="0,6,0,2"
+                                    PreviewMouseWheel="Slider_PreviewMouseWheel"
+                                    ValueChanged="BorderWidthSlider_ValueChanged"/>
+                        </StackPanel>
+                    </MenuItem.Header>
+                </MenuItem>
+
+                <Separator/>
+
+                <!-- Vintage CRT Scanlines -->
+                <MenuItem x:Name="CrtScanlinesMenuItem" 
+                          Header="Vintage CRT Scanlines" 
+                          IsCheckable="True" 
+                          IsChecked="False" 
+                          StaysOpenOnClick="True"
+                          Click="CrtScanlines_Click"/>
+                <MenuItem StaysOpenOnClick="True">
+                    <MenuItem.Header>
+                        <StackPanel Width="200" Margin="0,2">
+                            <DockPanel LastChildFill="False">
+                                <TextBlock Text="Scanline Thickness" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="ScanlineThicknessValueText" Text="3px" DockPanel.Dock="Right" Foreground="#666666"/>
+                            </DockPanel>
+                            <Slider x:Name="ScanlineThicknessSlider" 
+                                    Minimum="1" Maximum="20" Value="3"
+                                    SmallChange="1" LargeChange="2"
+                                    TickFrequency="1" IsSnapToTickEnabled="True"
+                                    Margin="0,6,0,2"
+                                    PreviewMouseWheel="Slider_PreviewMouseWheel"
+                                    ValueChanged="ScanlineThicknessSlider_ValueChanged"/>
+                        </StackPanel>
+                    </MenuItem.Header>
+                </MenuItem>
+
+                <Separator/>
+
+                <!-- CRT Glitch -->
+                <MenuItem x:Name="CrtGlitchMenuItem" 
+                          Header="CRT Glitch" 
+                          IsCheckable="True" 
+                          IsChecked="False" 
+                          StaysOpenOnClick="True"
+                          Click="CrtGlitch_Click"/>
+                <MenuItem StaysOpenOnClick="True">
+                    <MenuItem.Header>
+                        <StackPanel Width="200" Margin="0,2">
+                            <DockPanel LastChildFill="False">
+                                <TextBlock Text="Glitch Chance" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="GlitchChanceValueText" Text="15%" DockPanel.Dock="Right" Foreground="#666666"/>
+                            </DockPanel>
+                            <Slider x:Name="GlitchChanceSlider" 
+                                    Minimum="0" Maximum="100" Value="15"
+                                    SmallChange="1" LargeChange="5"
+                                    TickFrequency="1" IsSnapToTickEnabled="True"
+                                    Margin="0,6,0,2"
+                                    PreviewMouseWheel="Slider_PreviewMouseWheel"
+                                    ValueChanged="GlitchChanceSlider_ValueChanged"/>
+                        </StackPanel>
+                    </MenuItem.Header>
+                </MenuItem>
+
+                <Separator/>
+
+                <!-- CRT Snow -->
+                <MenuItem x:Name="CrtSnowMenuItem" 
+                          Header="CRT Snow" 
+                          IsCheckable="True" 
+                          IsChecked="False" 
+                          StaysOpenOnClick="True"
+                          Click="CrtSnow_Click"/>
+                <MenuItem StaysOpenOnClick="True">
+                    <MenuItem.Header>
+                        <StackPanel Width="200" Margin="0,2">
+                            <DockPanel LastChildFill="False">
+                                <TextBlock Text="Snow Strength" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="SnowAmountValueText" Text="25%" DockPanel.Dock="Right" Foreground="#666666"/>
+                            </DockPanel>
+                            <Slider x:Name="SnowAmountSlider" 
+                                    Minimum="0" Maximum="100" Value="25"
+                                    SmallChange="1" LargeChange="5"
+                                    TickFrequency="1" IsSnapToTickEnabled="True"
+                                    Margin="0,6,0,2"
+                                    PreviewMouseWheel="Slider_PreviewMouseWheel"
+                                    ValueChanged="SnowAmountSlider_ValueChanged"/>
+                        </StackPanel>
+                    </MenuItem.Header>
+                </MenuItem>
+            </MenuItem>
+
+            <Separator/>
             <MenuItem x:Name="AlwaysOnTopMenuItem" 
                       Header="Always on Top" 
                       IsCheckable="True" 
@@ -120,22 +240,100 @@
             </StackPanel>
         </Border>
 
-        <!-- Slideshow Image with faint 3D drop shadow -->
-        <Image x:Name="SlideshowImage" 
-               Stretch="Uniform" 
-               Margin="14"
-               RenderOptions.BitmapScalingMode="HighQuality"
-               HorizontalAlignment="Center" 
-               VerticalAlignment="Center">
-            <Image.Effect>
-                <DropShadowEffect x:Name="ImageDropShadow"
-                                  BlurRadius="16" 
-                                  ShadowDepth="4" 
-                                  Direction="315" 
-                                  Color="Black" 
-                                  Opacity="0.35" 
+        <!-- Container for image and image-specific CRT effects -->
+        <Grid x:Name="ImageContainer" Margin="14">
+            <!-- Slideshow Image with faint 3D drop shadow -->
+            <Image x:Name="SlideshowImage" 
+                   Stretch="Uniform" 
+                   RenderOptions.BitmapScalingMode="HighQuality"
+                   HorizontalAlignment="Center" 
+                   VerticalAlignment="Center">
+                <Image.RenderTransform>
+                    <TranslateTransform x:Name="ImageJitterTransform" X="0" Y="0"/>
+                </Image.RenderTransform>
+                <Image.Effect>
+                    <DropShadowEffect x:Name="ImageDropShadow"
+                                      BlurRadius="16" 
+                                      ShadowDepth="4" 
+                                      Direction="315" 
+                                      Color="Black" 
+                                      Opacity="0.35" 
+                                      RenderingBias="Performance"/>
+                </Image.Effect>
+            </Image>
+
+            <!-- CRT Effects Overlay (Snow Static, Scanlines, Glitch Slices) -->
+            <Grid x:Name="CrtOverlayGrid" IsHitTestVisible="False">
+                <!-- CRT Snow / Static noise overlay -->
+                <Image x:Name="CrtSnowOverlay"
+                       Stretch="Fill"
+                       Visibility="Collapsed"
+                       Opacity="0.0"
+                       IsHitTestVisible="False"
+                       RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+
+                <!-- Vintage Scanlines -->
+                <Rectangle x:Name="CrtScanlinesOverlay"
+                           Visibility="Collapsed"
+                           Opacity="0.85"
+                           IsHitTestVisible="False">
+                    <Rectangle.Fill>
+                        <DrawingBrush x:Name="CrtDrawingBrush" TileMode="Tile" Viewport="0,0,1,6" ViewportUnits="Absolute">
+                            <DrawingBrush.Drawing>
+                                <DrawingGroup>
+                                    <GeometryDrawing Brush="#00000000">
+                                        <GeometryDrawing.Geometry>
+                                            <RectangleGeometry Rect="0,0,1,6"/>
+                                        </GeometryDrawing.Geometry>
+                                    </GeometryDrawing>
+                                    <GeometryDrawing Brush="#F0000000">
+                                        <GeometryDrawing.Geometry>
+                                            <RectangleGeometry Rect="0,0,1,3"/>
+                                        </GeometryDrawing.Geometry>
+                                    </GeometryDrawing>
+                                </DrawingGroup>
+                            </DrawingBrush.Drawing>
+                        </DrawingBrush>
+                    </Rectangle.Fill>
+                </Rectangle>
+
+                <!-- CRT Glitch Bars & Chromatic Tears Canvas -->
+                <Canvas x:Name="CrtGlitchCanvas"
+                        Visibility="Collapsed"
+                        IsHitTestVisible="False"
+                        ClipToBounds="True"/>
+            </Grid>
+        </Grid>
+
+        <!-- Cyberpunk Rainbow Border around the window -->
+        <Border x:Name="CyberpunkRainbowBorder"
+                Margin="6"
+                CornerRadius="8"
+                BorderThickness="0"
+                Visibility="Collapsed"
+                IsHitTestVisible="False">
+            <Border.BorderBrush>
+                <LinearGradientBrush x:Name="RainbowGradientBrush" StartPoint="0,0" EndPoint="1,1">
+                    <LinearGradientBrush.RelativeTransform>
+                        <RotateTransform x:Name="RainbowRotateTransform" CenterX="0.5" CenterY="0.5" Angle="0"/>
+                    </LinearGradientBrush.RelativeTransform>
+                    <GradientStop Color="#FF0055" Offset="0.0"/>
+                    <GradientStop Color="#FF7700" Offset="0.16"/>
+                    <GradientStop Color="#FFE600" Offset="0.33"/>
+                    <GradientStop Color="#00FF66" Offset="0.50"/>
+                    <GradientStop Color="#00F0FF" Offset="0.67"/>
+                    <GradientStop Color="#7000FF" Offset="0.83"/>
+                    <GradientStop Color="#FF007F" Offset="1.0"/>
+                </LinearGradientBrush>
+            </Border.BorderBrush>
+            <Border.Effect>
+                <DropShadowEffect x:Name="RainbowGlowEffect"
+                                  BlurRadius="12" 
+                                  ShadowDepth="0" 
+                                  Color="#00F0FF" 
+                                  Opacity="0.8" 
                                   RenderingBias="Performance"/>
-            </Image.Effect>
-        </Image>
+            </Border.Effect>
+        </Border>
     </Grid>
 </Window>
